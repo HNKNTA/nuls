@@ -39,6 +39,14 @@ struct Cli {
     /// Show git status (+added/-deleted) if inside a git repo
     #[arg(short = 'g', long = "git", action = ArgAction::SetTrue, default_value_t = false)]
     git: bool,
+
+    /// Display as a tree (recursive)
+    #[arg(long = "tree", action = ArgAction::SetTrue, default_value_t = false)]
+    tree: bool,
+
+    /// Max depth for tree mode (default: unlimited)
+    #[arg(short = 'd', long = "depth", default_value_t = usize::MAX)]
+    depth: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +129,12 @@ fn main() {
 
 fn run(cli: Cli) -> Result<(), String> {
     let path = cli.path;
+
+    if cli.tree {
+        render_tree(&path, cli.include_hidden, cli.depth)?;
+        return Ok(());
+    }
+
     let git_info = if cli.git { load_git_info(&path) } else { Ok(None) }?;
     let entries = collect_entries(
         &path,
@@ -131,6 +145,157 @@ fn run(cli: Cli) -> Result<(), String> {
     )?;
     render_table(entries);
     Ok(())
+}
+
+struct TreeRow {
+    depth: usize,
+    name_plain: String,
+    name_colored: String,
+    entry_type_plain: String,
+    entry_type_colored: String,
+    size_plain: String,
+    size_colored: String,
+    modified_plain: String,
+    modified_colored: String,
+}
+
+fn render_tree(root: &Path, include_hidden: bool, max_depth: usize) -> Result<(), String> {
+    let mut rows = Vec::new();
+    collect_tree_entries(root, include_hidden, 0, max_depth, &mut rows)?;
+    render_tree_table(rows);
+    Ok(())
+}
+
+fn collect_tree_entries(
+    path: &Path,
+    include_hidden: bool,
+    depth: usize,
+    max_depth: usize,
+    rows: &mut Vec<TreeRow>,
+) -> Result<(), String> {
+    if depth >= max_depth {
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = fs::read_dir(path)
+        .map_err(|err| format!("cannot read {}: {err}", path.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            include_hidden || !name.starts_with('.')
+        })
+        .collect();
+
+    // Sort: directories first, then alphabetically
+    entries.sort_by(|a, b| {
+        let a_is_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let b_is_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        match (a_is_dir, b_is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.file_name().to_ascii_lowercase().cmp(&b.file_name().to_ascii_lowercase()),
+        }
+    });
+
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let file_type = entry.file_type().ok();
+        let is_dir = file_type.map(|t| t.is_dir()).unwrap_or(false);
+        let is_hidden = name.starts_with('.');
+        let metadata = entry.metadata().ok();
+
+        let is_exec = metadata.as_ref().map(|m| is_executable(m)).unwrap_or(false);
+        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        let modified_time = metadata.as_ref().and_then(|m| m.modified().ok());
+
+        let entry_type = if is_dir { EntryType::Dir } else { EntryType::File };
+        let name_colored = color_name(&name, entry_type, is_exec, is_hidden);
+
+        let type_plain = if is_dir { "dir" } else { "file" }.to_string();
+
+        let (modified_plain, recency) = modified_time
+            .map(format_relative_time)
+            .unwrap_or_else(|| ("unknown".to_string(), Recency::Unknown));
+
+        rows.push(TreeRow {
+            depth,
+            name_plain: name.clone(),
+            name_colored,
+            entry_type_plain: type_plain.clone(),
+            entry_type_colored: palette::paint(&type_plain, palette::TYPE),
+            size_plain: format_size(size),
+            size_colored: palette::paint(format_size(size), palette::SIZE),
+            modified_plain: modified_plain.clone(),
+            modified_colored: color_modified(&modified_plain, recency),
+        });
+
+        if is_dir {
+            let _ = collect_tree_entries(&entry.path(), include_hidden, depth + 1, max_depth, rows);
+        }
+    }
+
+    Ok(())
+}
+
+fn render_tree_table(rows: Vec<TreeRow>) {
+    let index_width = format!("{}", rows.len().saturating_sub(1)).len().max(1);
+    let name_width = rows
+        .iter()
+        .map(|row| row.name_plain.len() + row.depth * 2)
+        .max()
+        .unwrap_or(4)
+        .max("name".len());
+    let type_width = rows
+        .iter()
+        .map(|row| row.entry_type_plain.len())
+        .max()
+        .unwrap_or(4)
+        .max("type".len());
+    let size_width = rows
+        .iter()
+        .map(|row| row.size_plain.len())
+        .max()
+        .unwrap_or(4)
+        .max("size".len());
+    let modified_width = rows
+        .iter()
+        .map(|row| row.modified_plain.len())
+        .max()
+        .unwrap_or(8)
+        .max("modified".len());
+    let widths = vec![index_width, name_width, type_width, size_width, modified_width];
+
+    println!("{}", horizontal_border(&widths, BorderKind::Top));
+    let header_cells = vec![
+        ("#".to_string(), palette::paint("#", palette::INDEX), Align::Right),
+        ("name".to_string(), palette::paint("name", palette::HEADER), Align::Left),
+        ("type".to_string(), palette::paint("type", palette::HEADER), Align::Left),
+        ("size".to_string(), palette::paint("size", palette::HEADER), Align::Right),
+        ("modified".to_string(), palette::paint("modified", palette::HEADER), Align::Left),
+    ];
+    println!("{}", render_row(&header_cells, &widths));
+    println!("{}", horizontal_border(&widths, BorderKind::Middle));
+
+    for (idx, row) in rows.iter().enumerate() {
+        let idx_plain = idx.to_string();
+        let idx_colored = palette::paint(&idx_plain, palette::INDEX);
+
+        // Add indentation to name
+        let indent = "  ".repeat(row.depth);
+        let name_plain_indented = format!("{}{}", indent, row.name_plain);
+        let name_colored_indented = format!("{}{}", indent, row.name_colored);
+
+        let data_cells = vec![
+            (idx_plain, idx_colored, Align::Right),
+            (name_plain_indented, name_colored_indented, Align::Left),
+            (row.entry_type_plain.clone(), row.entry_type_colored.clone(), Align::Left),
+            (row.size_plain.clone(), row.size_colored.clone(), Align::Right),
+            (row.modified_plain.clone(), row.modified_colored.clone(), Align::Left),
+        ];
+        println!("{}", render_row(&data_cells, &widths));
+    }
+
+    println!("{}", horizontal_border(&widths, BorderKind::Bottom));
 }
 
 fn collect_entries(
