@@ -3,6 +3,7 @@ use clap::{ArgAction, ColorChoice, Parser};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
@@ -47,6 +48,18 @@ struct Cli {
     /// Max depth for tree mode (default: unlimited)
     #[arg(short = 'd', long = "depth", default_value_t = usize::MAX)]
     depth: usize,
+
+    /// Show only directories (hide files)
+    #[arg(short = 'D', long = "dirs-only", action = ArgAction::SetTrue, default_value_t = false)]
+    dirs_only: bool,
+
+    /// Limit number of results shown
+    #[arg(short = 'n', long = "limit")]
+    limit: Option<usize>,
+
+    /// Color output: always, auto, never
+    #[arg(long = "color", value_name = "WHEN", default_value = "auto")]
+    color: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,7 +89,21 @@ enum Align {
     Right,
 }
 
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+static COLOR_ENABLED: AtomicBool = AtomicBool::new(true);
+
+fn set_color_enabled(enabled: bool) {
+    COLOR_ENABLED.store(enabled, AtomicOrdering::SeqCst);
+}
+
+fn is_color_enabled() -> bool {
+    COLOR_ENABLED.load(AtomicOrdering::SeqCst)
+}
+
 mod palette {
+    use crate::is_color_enabled;
+
     pub const RESET: &str = "\x1b[0m";
     pub const BORDER: &str = "\x1b[38;5;99m";
     pub const HEADER: &str = "\x1b[38;5;82m";
@@ -102,7 +129,11 @@ mod palette {
     pub const GIT_CLEAN: &str = "\x1b[38;5;240m";
 
     pub fn paint(text: impl AsRef<str>, color: &str) -> String {
-        format!("{}{}{}", color, text.as_ref(), RESET)
+        if is_color_enabled() {
+            format!("{}{}{}", color, text.as_ref(), RESET)
+        } else {
+            text.as_ref().to_string()
+        }
     }
 }
 
@@ -128,10 +159,18 @@ fn main() {
 }
 
 fn run(cli: Cli) -> Result<(), String> {
+    // Set color mode based on --color flag
+    let use_color = match cli.color.as_str() {
+        "never" => false,
+        "always" => true,
+        _ => atty::is(atty::Stream::Stdout), // auto: color if stdout is a tty
+    };
+    set_color_enabled(use_color);
+
     let path = cli.path;
 
     if cli.tree {
-        render_tree(&path, cli.include_hidden, cli.depth)?;
+        render_tree(&path, cli.include_hidden, cli.depth, cli.dirs_only, cli.sort_modified, cli.limit)?;
         return Ok(());
     }
 
@@ -148,7 +187,8 @@ fn run(cli: Cli) -> Result<(), String> {
 }
 
 struct TreeRow {
-    depth: usize,
+    prefix_plain: String,
+    prefix_colored: String,
     name_plain: String,
     name_colored: String,
     entry_type_plain: String,
@@ -159,10 +199,11 @@ struct TreeRow {
     modified_colored: String,
 }
 
-fn render_tree(root: &Path, include_hidden: bool, max_depth: usize) -> Result<(), String> {
+fn render_tree(root: &Path, include_hidden: bool, max_depth: usize, dirs_only: bool, sort_modified: bool, page_size: Option<usize>) -> Result<(), String> {
     let mut rows = Vec::new();
-    collect_tree_entries(root, include_hidden, 0, max_depth, &mut rows)?;
-    render_tree_table(rows);
+    let ancestors_are_last: Vec<bool> = Vec::new();
+    collect_tree_entries(root, include_hidden, 0, max_depth, dirs_only, sort_modified, &ancestors_are_last, &mut rows)?;
+    render_tree_table(rows, page_size);
     Ok(())
 }
 
@@ -171,6 +212,9 @@ fn collect_tree_entries(
     include_hidden: bool,
     depth: usize,
     max_depth: usize,
+    dirs_only: bool,
+    sort_modified: bool,
+    ancestors_are_last: &[bool],
     rows: &mut Vec<TreeRow>,
 ) -> Result<(), String> {
     if depth >= max_depth {
@@ -182,22 +226,35 @@ fn collect_tree_entries(
         .filter_map(|e| e.ok())
         .filter(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            include_hidden || !name.starts_with('.')
+            let not_hidden = include_hidden || !name.starts_with('.');
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            not_hidden && (!dirs_only || is_dir)
         })
         .collect();
 
-    // Sort: directories first, then alphabetically
-    entries.sort_by(|a, b| {
-        let a_is_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        let b_is_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        match (a_is_dir, b_is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.file_name().to_ascii_lowercase().cmp(&b.file_name().to_ascii_lowercase()),
-        }
-    });
+    // Sort entries
+    if sort_modified {
+        entries.sort_by(|a, b| {
+            let a_mod = a.metadata().ok().and_then(|m| m.modified().ok());
+            let b_mod = b.metadata().ok().and_then(|m| m.modified().ok());
+            compare_modified_desc(&b_mod, &a_mod).reverse()
+        });
+    } else {
+        // directories first, then alphabetically
+        entries.sort_by(|a, b| {
+            let a_is_dir = a.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let b_is_dir = b.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            match (a_is_dir, b_is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.file_name().to_ascii_lowercase().cmp(&b.file_name().to_ascii_lowercase()),
+            }
+        });
+    }
 
-    for entry in entries {
+    let count = entries.len();
+    for (idx, entry) in entries.into_iter().enumerate() {
+        let is_last = idx + 1 == count;
         let name = entry.file_name().to_string_lossy().to_string();
         let file_type = entry.file_type().ok();
         let is_dir = file_type.map(|t| t.is_dir()).unwrap_or(false);
@@ -217,8 +274,12 @@ fn collect_tree_entries(
             .map(format_relative_time)
             .unwrap_or_else(|| ("unknown".to_string(), Recency::Unknown));
 
+        // Build tree prefix
+        let (prefix_plain, prefix_colored) = build_tree_prefix(ancestors_are_last, is_last);
+
         rows.push(TreeRow {
-            depth,
+            prefix_plain,
+            prefix_colored,
             name_plain: name.clone(),
             name_colored,
             entry_type_plain: type_plain.clone(),
@@ -230,36 +291,63 @@ fn collect_tree_entries(
         });
 
         if is_dir {
-            let _ = collect_tree_entries(&entry.path(), include_hidden, depth + 1, max_depth, rows);
+            let mut new_ancestors = ancestors_are_last.to_vec();
+            new_ancestors.push(is_last);
+            let _ = collect_tree_entries(&entry.path(), include_hidden, depth + 1, max_depth, dirs_only, sort_modified, &new_ancestors, rows);
         }
     }
 
     Ok(())
 }
 
-fn render_tree_table(rows: Vec<TreeRow>) {
+fn build_tree_prefix(ancestors_are_last: &[bool], is_last: bool) -> (String, String) {
+    let mut plain = String::new();
+    let mut colored = String::new();
+
+    // Add continuation lines for ancestors
+    for &ancestor_is_last in ancestors_are_last {
+        if ancestor_is_last {
+            plain.push_str("    ");
+            colored.push_str("    ");
+        } else {
+            plain.push_str("│   ");
+            colored.push_str(&format!("{}   ", palette::paint("│", palette::BORDER)));
+        }
+    }
+
+    // Add connector for current item
+    if !ancestors_are_last.is_empty() || ancestors_are_last.is_empty() {
+        let connector = if is_last { "└── " } else { "├── " };
+        plain.push_str(connector);
+        colored.push_str(&palette::paint(connector, palette::BORDER));
+    }
+
+    (plain, colored)
+}
+
+fn render_tree_table(rows: Vec<TreeRow>, page_size: Option<usize>) {
     let index_width = format!("{}", rows.len().saturating_sub(1)).len().max(1);
     let name_width = rows
         .iter()
-        .map(|row| row.name_plain.len() + row.depth * 2)
+        .map(|row| visual_width(&row.prefix_plain) + visual_width(&row.name_plain))
         .max()
         .unwrap_or(4)
         .max("name".len());
     let type_width = rows
         .iter()
-        .map(|row| row.entry_type_plain.len())
+        .map(|row| visual_width(&row.entry_type_plain))
         .max()
         .unwrap_or(4)
         .max("type".len());
     let size_width = rows
         .iter()
-        .map(|row| row.size_plain.len())
+        .map(|row| visual_width(&row.size_plain))
         .max()
         .unwrap_or(4)
         .max("size".len());
     let modified_width = rows
         .iter()
-        .map(|row| row.modified_plain.len())
+        .map(|row| visual_width(&row.modified_plain))
         .max()
         .unwrap_or(8)
         .max("modified".len());
@@ -276,23 +364,43 @@ fn render_tree_table(rows: Vec<TreeRow>) {
     println!("{}", render_row(&header_cells, &widths));
     println!("{}", horizontal_border(&widths, BorderKind::Middle));
 
+    let total = rows.len();
     for (idx, row) in rows.iter().enumerate() {
         let idx_plain = idx.to_string();
         let idx_colored = palette::paint(&idx_plain, palette::INDEX);
 
-        // Add indentation to name
-        let indent = "  ".repeat(row.depth);
-        let name_plain_indented = format!("{}{}", indent, row.name_plain);
-        let name_colored_indented = format!("{}{}", indent, row.name_colored);
+        // Add tree prefix to name
+        let name_plain_with_prefix = format!("{}{}", row.prefix_plain, row.name_plain);
+        let name_colored_with_prefix = format!("{}{}", row.prefix_colored, row.name_colored);
 
         let data_cells = vec![
             (idx_plain, idx_colored, Align::Right),
-            (name_plain_indented, name_colored_indented, Align::Left),
+            (name_plain_with_prefix, name_colored_with_prefix, Align::Left),
             (row.entry_type_plain.clone(), row.entry_type_colored.clone(), Align::Left),
             (row.size_plain.clone(), row.size_colored.clone(), Align::Right),
             (row.modified_plain.clone(), row.modified_colored.clone(), Align::Left),
         ];
         println!("{}", render_row(&data_cells, &widths));
+
+        // Pagination: pause after page_size rows, auto-exit when done
+        // Only paginate when stdout is a TTY (not when piped)
+        if let Some(ps) = page_size {
+            if (idx + 1) % ps == 0 && idx + 1 < total {
+                if atty::is(atty::Stream::Stdout) {
+                    let remaining = total - idx - 1;
+                    print!(
+                        "{}",
+                        palette::paint(
+                            format!("-- {} more, press Enter to continue --", remaining),
+                            palette::MODIFIED_OLD
+                        )
+                    );
+                    let _ = io::stdout().flush();
+                    let mut input = String::new();
+                    let _ = io::stdin().lock().read_line(&mut input);
+                }
+            }
+        }
     }
 
     println!("{}", horizontal_border(&widths, BorderKind::Bottom));
@@ -695,11 +803,15 @@ fn render_row(columns: &[(String, String, Align)], widths: &[usize]) -> String {
 }
 
 fn pad_cell(colored: &str, plain: &str, width: usize, align: Align) -> String {
-    let pad = width.saturating_sub(plain.len());
+    let pad = width.saturating_sub(visual_width(plain));
     match align {
         Align::Left => format!("{colored}{}", " ".repeat(pad)),
         Align::Right => format!("{}{}", " ".repeat(pad), colored),
     }
+}
+
+fn visual_width(s: &str) -> usize {
+    s.chars().count()
 }
 
 fn format_size(size: u64) -> String {
