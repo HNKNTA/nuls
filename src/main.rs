@@ -1,4 +1,5 @@
 use clap::builder::styling::{AnsiColor, Color, Style, Styles};
+use unicode_width::UnicodeWidthStr;
 use clap::{ArgAction, ColorChoice, Parser};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -811,7 +812,7 @@ fn pad_cell(colored: &str, plain: &str, width: usize, align: Align) -> String {
 }
 
 fn visual_width(s: &str) -> usize {
-    s.chars().count()
+    UnicodeWidthStr::width(s)
 }
 
 fn format_size(size: u64) -> String {
