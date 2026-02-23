@@ -681,25 +681,25 @@ fn render_table(rows: Vec<EntryRow>) {
     let index_width = format!("{}", rows.len().saturating_sub(1)).len().max(1);
     let name_width = rows
         .iter()
-        .map(|row| row.name_with_git_plain.len())
+        .map(|row| visual_width(&row.name_with_git_plain))
         .max()
         .unwrap_or(4)
         .max("name".len());
     let type_width = rows
         .iter()
-        .map(|row| row.entry_type_plain.len())
+        .map(|row| visual_width(&row.entry_type_plain))
         .max()
         .unwrap_or(4)
         .max("type".len());
     let size_width = rows
         .iter()
-        .map(|row| row.size_plain.len())
+        .map(|row| visual_width(&row.size_plain))
         .max()
         .unwrap_or(4)
         .max("size".len());
     let modified_width = rows
         .iter()
-        .map(|row| row.modified_plain.len())
+        .map(|row| visual_width(&row.modified_plain))
         .max()
         .unwrap_or(8)
         .max("modified".len());
