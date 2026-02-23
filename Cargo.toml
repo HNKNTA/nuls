@@ -9,3 +9,4 @@ license = "MIT"
 clap = { version = "4.5", features = ["derive"] }
 atty = "0.2"
 unicode-width = "0.2"
+libc = "0.2"

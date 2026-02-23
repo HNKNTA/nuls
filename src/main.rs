@@ -1,5 +1,7 @@
 use clap::builder::styling::{AnsiColor, Color, Style, Styles};
 use unicode_width::UnicodeWidthStr;
+#[cfg(unix)]
+use libc;
 use clap::{ArgAction, ColorChoice, Parser};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -26,9 +28,9 @@ struct Cli {
     #[arg(short = 'a', long = "all", action = ArgAction::SetTrue, default_value_t = false)]
     include_hidden: bool,
 
-    /// Long listing output (accepted for familiarity; same as default output)
+    /// Show owner column
     #[arg(short = 'l', long = "long", action = ArgAction::SetTrue, default_value_t = false)]
-    _long: bool,
+    long: bool,
 
     /// Sort by modified time (newest first), like ls -t
     #[arg(short = 't', long = "sort-modified", action = ArgAction::SetTrue, default_value_t = false)]
@@ -72,6 +74,8 @@ enum EntryType {
 #[derive(Debug)]
 struct EntryRow {
     name_plain: String,
+    owner_plain: String,
+    owner_colored: String,
     entry_type_plain: String,
     entry_type_colored: String,
     size_plain: String,
@@ -124,6 +128,7 @@ mod palette {
     pub const EXEC: &str = "\x1b[38;5;197m";
     pub const DOTFILE: &str = "\x1b[38;5;179m";
     pub const WARN: &str = "\x1b[38;5;214m";
+    pub const OWNER: &str = "\x1b[38;5;153m";
     pub const GIT_DIRTY: &str = "\x1b[38;5;214m";
     pub const GIT_ADDED: &str = "\x1b[38;5;77m";
     pub const GIT_REMOVED: &str = "\x1b[38;5;203m";
@@ -183,7 +188,7 @@ fn run(cli: Cli) -> Result<(), String> {
         cli.reverse,
         git_info,
     )?;
-    render_table(entries);
+    render_table(entries, cli.long);
     Ok(())
 }
 
@@ -466,8 +471,12 @@ fn collect_entries(
             (name.clone(), name_colored.clone())
         };
 
+        let owner_plain = get_file_owner(&metadata);
+        let owner_colored = palette::paint(&owner_plain, palette::OWNER);
         rows.push(EntryRow {
             name_plain: name.clone(),
+            owner_plain,
+            owner_colored,
             name_with_git_plain,
             name_with_git_colored,
             entry_type_plain: type_plain.clone(),
@@ -678,7 +687,7 @@ fn sum_opts(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
-fn render_table(rows: Vec<EntryRow>) {
+fn render_table(rows: Vec<EntryRow>, long: bool) {
     let index_width = format!("{}", rows.len().saturating_sub(1)).len().max(1);
     let name_width = rows
         .iter()
@@ -686,6 +695,15 @@ fn render_table(rows: Vec<EntryRow>) {
         .max()
         .unwrap_or(4)
         .max("name".len());
+    let owner_width = if long {
+        rows.iter()
+            .map(|row| visual_width(&row.owner_plain))
+            .max()
+            .unwrap_or(5)
+            .max("owner".len())
+    } else {
+        0
+    };
     let type_width = rows
         .iter()
         .map(|row| visual_width(&row.entry_type_plain))
@@ -704,16 +722,28 @@ fn render_table(rows: Vec<EntryRow>) {
         .max()
         .unwrap_or(8)
         .max("modified".len());
-    let widths = vec![index_width, name_width, type_width, size_width, modified_width];
+
+    let mut widths = vec![index_width, name_width];
+    if long { widths.push(owner_width); }
+    widths.extend([type_width, size_width, modified_width]);
 
     println!("{}", horizontal_border(&widths, BorderKind::Top));
-    let header_cells = vec![
+    let mut header_cells = vec![
         ("#".to_string(), palette::paint("#", palette::INDEX), Align::Right),
         (
             "name".to_string(),
             palette::paint("name", palette::HEADER),
             Align::Left,
         ),
+    ];
+    if long {
+        header_cells.push((
+            "owner".to_string(),
+            palette::paint("owner", palette::HEADER),
+            Align::Left,
+        ));
+    }
+    header_cells.extend([
         (
             "type".to_string(),
             palette::paint("type", palette::HEADER),
@@ -729,20 +759,29 @@ fn render_table(rows: Vec<EntryRow>) {
             palette::paint("modified", palette::HEADER),
             Align::Left,
         ),
-    ];
+    ]);
     println!("{}", render_row(&header_cells, &widths));
     println!("{}", horizontal_border(&widths, BorderKind::Middle));
 
     for (idx, row) in rows.iter().enumerate() {
         let idx_plain = idx.to_string();
         let idx_colored = palette::paint(idx_plain.clone(), palette::INDEX);
-        let data_cells = vec![
+        let mut data_cells = vec![
             (idx_plain, idx_colored, Align::Right),
             (
                 row.name_with_git_plain.clone(),
                 row.name_with_git_colored.clone(),
                 Align::Left,
             ),
+        ];
+        if long {
+            data_cells.push((
+                row.owner_plain.clone(),
+                row.owner_colored.clone(),
+                Align::Left,
+            ));
+        }
+        data_cells.extend([
             (
                 row.entry_type_plain.clone(),
                 row.entry_type_colored.clone(),
@@ -754,7 +793,7 @@ fn render_table(rows: Vec<EntryRow>) {
                 row.modified_colored.clone(),
                 Align::Left,
             ),
-        ];
+        ]);
         println!(
             "{}",
             render_row(&data_cells, &widths)
@@ -991,6 +1030,27 @@ fn is_executable(_metadata: &fs::Metadata) -> bool {
     false
 }
 
+#[cfg(unix)]
+fn get_file_owner(metadata: &fs::Metadata) -> String {
+    use std::ffi::CStr;
+    use std::os::unix::fs::MetadataExt;
+    let uid = metadata.uid();
+    unsafe {
+        let pw = libc::getpwuid(uid);
+        if pw.is_null() {
+            return uid.to_string();
+        }
+        CStr::from_ptr((*pw).pw_name)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+#[cfg(not(unix))]
+fn get_file_owner(_metadata: &fs::Metadata) -> String {
+    "—".to_string()
+}
+
 fn help_styles() -> Styles {
     Styles::styled()
         .header(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green))).bold())
@@ -1092,6 +1152,8 @@ mod tests {
                 name_plain: "old_dir".into(),
                 name_with_git_plain: "old_dir".into(),
                 name_with_git_colored: String::new(),
+                owner_plain: String::new(),
+                owner_colored: String::new(),
                 entry_type_plain: "dir".into(),
                 entry_type_colored: String::new(),
                 size_plain: String::new(),
@@ -1105,6 +1167,8 @@ mod tests {
                 name_plain: "new_file".into(),
                 name_with_git_plain: "new_file".into(),
                 name_with_git_colored: String::new(),
+                owner_plain: String::new(),
+                owner_colored: String::new(),
                 entry_type_plain: "file".into(),
                 entry_type_colored: String::new(),
                 size_plain: String::new(),
@@ -1118,6 +1182,8 @@ mod tests {
                 name_plain: "mid_file".into(),
                 name_with_git_plain: "mid_file".into(),
                 name_with_git_colored: String::new(),
+                owner_plain: String::new(),
+                owner_colored: String::new(),
                 entry_type_plain: "file".into(),
                 entry_type_colored: String::new(),
                 size_plain: String::new(),
@@ -1142,6 +1208,8 @@ mod tests {
                 name_plain: "a".into(),
                 name_with_git_plain: "a".into(),
                 name_with_git_colored: String::new(),
+                owner_plain: String::new(),
+                owner_colored: String::new(),
                 entry_type_plain: "file".into(),
                 entry_type_colored: String::new(),
                 size_plain: String::new(),
@@ -1155,6 +1223,8 @@ mod tests {
                 name_plain: "b".into(),
                 name_with_git_plain: "b".into(),
                 name_with_git_colored: String::new(),
+                owner_plain: String::new(),
+                owner_colored: String::new(),
                 entry_type_plain: "file".into(),
                 entry_type_colored: String::new(),
                 size_plain: String::new(),
