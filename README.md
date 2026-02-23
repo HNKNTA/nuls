@@ -4,7 +4,10 @@
 >
 > The original `nuls` is an incredibly well-crafted, beautifully designed CLI tool that brings NuShell's elegant table-based `ls` output to any terminal. Huge thanks to **cesarferreira** for creating such an amazing developer tool that inspired this fork!
 
-This fork adds **tree view mode**, **interactive pagination**, and **enhanced color control** while preserving everything that makes the original nuls great.
+This fork adds **tree view mode**, **interactive pagination**, **file owner display**, and **enhanced color control** while preserving everything that makes the original nuls great.
+
+**Forked from:** [github.com/ozenalp22/nuls](https://github.com/ozenalp22/nuls)
+**This fork:** [github.com/HNKNTA/nuls](https://github.com/HNKNTA/nuls)
 
 ---
 
@@ -53,6 +56,19 @@ Limit results with `Enter` to continue, auto-exits when done (no `q` needed):
 -- 81 more, press Enter to continue --
 ```
 
+### File Owner Column (`-l`)
+Show the file owner in a dedicated column:
+
+```
+┌───┬────────────┬────────┬──────┬───────┬───────────────┐
+│ # │ name       │ owner  │ type │  size │ modified      │
+├───┼────────────┼────────┼──────┼───────┼───────────────┤
+│ 0 │ src        │ user   │ dir  │ 160 B │ 2 minutes ago │
+│ 1 │ tests      │ user   │ dir  │  96 B │ 1 hour ago    │
+│ 2 │ Cargo.toml │ user   │ file │ 220 B │ 5 minutes ago │
+└───┴────────────┴────────┴──────┴───────┴───────────────┘
+```
+
 ### Color Control (`--color`)
 Control ANSI color output for clean clipboard copying:
 - `--color=auto` — colors when terminal, plain when piped (default)
@@ -68,6 +84,7 @@ Control ANSI color output for clean clipboard copying:
 | Tree view | `--tree` | Recursive directory listing with tree connectors |
 | Depth limit | `-d, --depth N` | Limit tree recursion depth |
 | Dirs only | `-D, --dirs-only` | Show only directories (hide files) |
+| Owner column | `-l, --long` | Show file owner username |
 | Pagination | `-n, --limit N` | Show N results, press Enter for more |
 | Color control | `--color=never` | Plain output for clipboard copying |
 
@@ -144,7 +161,7 @@ cargo install --path . --bin nuls --force
 | Flag | Description |
 |------|-------------|
 | `-a, --all` | Show dotfiles |
-| `-l, --long` | Accepted for familiarity (output is already long-form) |
+| `-l, --long` | Show file owner column |
 | `-t, --sort-modified` | Sort by modified time (newest first) |
 | `-r, --reverse` | Reverse sort order |
 | `-g, --git` | Show git status inline (+added/-deleted) |
@@ -164,6 +181,8 @@ cargo install --path . --bin nuls --force
 
 - **Original Author:** [cesarferreira](https://github.com/cesarferreira)
 - **Original Repository:** [github.com/cesarferreira/nuls](https://github.com/cesarferreira/nuls)
+- **Forked from:** [github.com/ozenalp22/nuls](https://github.com/ozenalp22/nuls)
+- **This fork:** [github.com/HNKNTA/nuls](https://github.com/HNKNTA/nuls)
 - **License:** MIT
 
 ---
