@@ -74,6 +74,8 @@ enum EntryType {
 #[derive(Debug)]
 struct EntryRow {
     name_plain: String,
+    permissions_plain: String,
+    permissions_colored: String,
     owner_plain: String,
     owner_colored: String,
     entry_type_plain: String,
@@ -129,6 +131,7 @@ mod palette {
     pub const DOTFILE: &str = "\x1b[38;5;179m";
     pub const WARN: &str = "\x1b[38;5;214m";
     pub const OWNER: &str = "\x1b[38;5;153m";
+    pub const PERMS: &str = "\x1b[38;5;114m";
     pub const GIT_DIRTY: &str = "\x1b[38;5;214m";
     pub const GIT_ADDED: &str = "\x1b[38;5;77m";
     pub const GIT_REMOVED: &str = "\x1b[38;5;203m";
@@ -471,10 +474,15 @@ fn collect_entries(
             (name.clone(), name_colored.clone())
         };
 
+        let is_dir = entry_type == EntryType::Dir;
+        let permissions_plain = format_permissions(&metadata, is_dir);
+        let permissions_colored = palette::paint(&permissions_plain, palette::PERMS);
         let owner_plain = get_file_owner(&metadata);
         let owner_colored = palette::paint(&owner_plain, palette::OWNER);
         rows.push(EntryRow {
             name_plain: name.clone(),
+            permissions_plain,
+            permissions_colored,
             owner_plain,
             owner_colored,
             name_with_git_plain,
@@ -486,7 +494,7 @@ fn collect_entries(
             modified_colored: color_modified(&modified_plain, recency),
             modified_plain,
             modified_time,
-            is_dir: entry_type == EntryType::Dir,
+            is_dir,
         });
     }
 
@@ -695,6 +703,15 @@ fn render_table(rows: Vec<EntryRow>, long: bool) {
         .max()
         .unwrap_or(4)
         .max("name".len());
+    let perms_width = if long {
+        rows.iter()
+            .map(|row| visual_width(&row.permissions_plain))
+            .max()
+            .unwrap_or(10)
+            .max("permissions".len())
+    } else {
+        0
+    };
     let owner_width = if long {
         rows.iter()
             .map(|row| visual_width(&row.owner_plain))
@@ -723,42 +740,25 @@ fn render_table(rows: Vec<EntryRow>, long: bool) {
         .unwrap_or(8)
         .max("modified".len());
 
-    let mut widths = vec![index_width, name_width];
-    if long { widths.push(owner_width); }
-    widths.extend([type_width, size_width, modified_width]);
+    let mut widths = vec![index_width, name_width, type_width];
+    if long { widths.extend([perms_width, owner_width]); }
+    widths.extend([size_width, modified_width]);
 
     println!("{}", horizontal_border(&widths, BorderKind::Top));
     let mut header_cells = vec![
         ("#".to_string(), palette::paint("#", palette::INDEX), Align::Right),
-        (
-            "name".to_string(),
-            palette::paint("name", palette::HEADER),
-            Align::Left,
-        ),
+        ("name".to_string(), palette::paint("name", palette::HEADER), Align::Left),
+        ("type".to_string(), palette::paint("type", palette::HEADER), Align::Left),
     ];
     if long {
-        header_cells.push((
-            "owner".to_string(),
-            palette::paint("owner", palette::HEADER),
-            Align::Left,
-        ));
+        header_cells.extend([
+            ("permissions".to_string(), palette::paint("permissions", palette::HEADER), Align::Left),
+            ("owner".to_string(), palette::paint("owner", palette::HEADER), Align::Left),
+        ]);
     }
     header_cells.extend([
-        (
-            "type".to_string(),
-            palette::paint("type", palette::HEADER),
-            Align::Left,
-        ),
-        (
-            "size".to_string(),
-            palette::paint("size", palette::HEADER),
-            Align::Right,
-        ),
-        (
-            "modified".to_string(),
-            palette::paint("modified", palette::HEADER),
-            Align::Left,
-        ),
+        ("size".to_string(), palette::paint("size", palette::HEADER), Align::Right),
+        ("modified".to_string(), palette::paint("modified", palette::HEADER), Align::Left),
     ]);
     println!("{}", render_row(&header_cells, &widths));
     println!("{}", horizontal_border(&widths, BorderKind::Middle));
@@ -768,31 +768,18 @@ fn render_table(rows: Vec<EntryRow>, long: bool) {
         let idx_colored = palette::paint(idx_plain.clone(), palette::INDEX);
         let mut data_cells = vec![
             (idx_plain, idx_colored, Align::Right),
-            (
-                row.name_with_git_plain.clone(),
-                row.name_with_git_colored.clone(),
-                Align::Left,
-            ),
+            (row.name_with_git_plain.clone(), row.name_with_git_colored.clone(), Align::Left),
+            (row.entry_type_plain.clone(), row.entry_type_colored.clone(), Align::Left),
         ];
         if long {
-            data_cells.push((
-                row.owner_plain.clone(),
-                row.owner_colored.clone(),
-                Align::Left,
-            ));
+            data_cells.extend([
+                (row.permissions_plain.clone(), row.permissions_colored.clone(), Align::Left),
+                (row.owner_plain.clone(), row.owner_colored.clone(), Align::Left),
+            ]);
         }
         data_cells.extend([
-            (
-                row.entry_type_plain.clone(),
-                row.entry_type_colored.clone(),
-                Align::Left,
-            ),
             (row.size_plain.clone(), row.size_colored.clone(), Align::Right),
-            (
-                row.modified_plain.clone(),
-                row.modified_colored.clone(),
-                Align::Left,
-            ),
+            (row.modified_plain.clone(), row.modified_colored.clone(), Align::Left),
         ]);
         println!(
             "{}",
@@ -1051,6 +1038,27 @@ fn get_file_owner(_metadata: &fs::Metadata) -> String {
     "—".to_string()
 }
 
+#[cfg(unix)]
+fn format_permissions(metadata: &fs::Metadata, is_dir: bool) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = metadata.permissions().mode();
+    let prefix = if is_dir { 'd' } else { '-' };
+    let mut s = String::with_capacity(10);
+    s.push(prefix);
+    for shift in [6, 3, 0] {
+        let bits = (mode >> shift) & 0o7;
+        s.push(if bits & 0o4 != 0 { 'r' } else { '-' });
+        s.push(if bits & 0o2 != 0 { 'w' } else { '-' });
+        s.push(if bits & 0o1 != 0 { 'x' } else { '-' });
+    }
+    s
+}
+
+#[cfg(not(unix))]
+fn format_permissions(_metadata: &fs::Metadata, _is_dir: bool) -> String {
+    "—".to_string()
+}
+
 fn help_styles() -> Styles {
     Styles::styled()
         .header(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green))).bold())
@@ -1152,6 +1160,8 @@ mod tests {
                 name_plain: "old_dir".into(),
                 name_with_git_plain: "old_dir".into(),
                 name_with_git_colored: String::new(),
+                permissions_plain: String::new(),
+                permissions_colored: String::new(),
                 owner_plain: String::new(),
                 owner_colored: String::new(),
                 entry_type_plain: "dir".into(),
@@ -1167,6 +1177,8 @@ mod tests {
                 name_plain: "new_file".into(),
                 name_with_git_plain: "new_file".into(),
                 name_with_git_colored: String::new(),
+                permissions_plain: String::new(),
+                permissions_colored: String::new(),
                 owner_plain: String::new(),
                 owner_colored: String::new(),
                 entry_type_plain: "file".into(),
@@ -1182,6 +1194,8 @@ mod tests {
                 name_plain: "mid_file".into(),
                 name_with_git_plain: "mid_file".into(),
                 name_with_git_colored: String::new(),
+                permissions_plain: String::new(),
+                permissions_colored: String::new(),
                 owner_plain: String::new(),
                 owner_colored: String::new(),
                 entry_type_plain: "file".into(),
@@ -1208,6 +1222,8 @@ mod tests {
                 name_plain: "a".into(),
                 name_with_git_plain: "a".into(),
                 name_with_git_colored: String::new(),
+                permissions_plain: String::new(),
+                permissions_colored: String::new(),
                 owner_plain: String::new(),
                 owner_colored: String::new(),
                 entry_type_plain: "file".into(),
@@ -1223,6 +1239,8 @@ mod tests {
                 name_plain: "b".into(),
                 name_with_git_plain: "b".into(),
                 name_with_git_colored: String::new(),
+                permissions_plain: String::new(),
+                permissions_colored: String::new(),
                 owner_plain: String::new(),
                 owner_colored: String::new(),
                 entry_type_plain: "file".into(),
@@ -1268,5 +1286,65 @@ mod tests {
         let (plain, colored) = format_git(&status).expect("has output");
         assert_eq!(plain, "");
         assert!(colored.contains(palette::GIT_CLEAN));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_permissions_regular_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join("nuls_test_perms_file");
+        let _ = fs::remove_file(&dir);
+        fs::write(&dir, "test").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o644)).unwrap();
+        let meta = fs::metadata(&dir).unwrap();
+        assert_eq!(format_permissions(&meta, false), "-rw-r--r--");
+        fs::remove_file(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_permissions_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join("nuls_test_perms_exec");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "test").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(format_permissions(&meta, false), "-rwxr-xr-x");
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn format_permissions_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join("nuls_test_perms_dir");
+        let _ = fs::remove_dir(&path);
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(format_permissions(&meta, true), "drwxr-xr-x");
+        fs::remove_dir(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn get_file_owner_returns_current_user() {
+        let path = std::env::temp_dir().join("nuls_test_owner");
+        let _ = fs::remove_file(&path);
+        fs::write(&path, "test").unwrap();
+        let meta = fs::metadata(&path).unwrap();
+        let owner = get_file_owner(&meta);
+        assert!(!owner.is_empty());
+        assert!(!owner.contains('/'));
+        fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn cli_long_flag_parses() {
+        let cli = Cli::try_parse_from(["nuls", "-l"]).expect("parse ok");
+        assert!(cli.long);
+        let cli2 = Cli::try_parse_from(["nuls"]).expect("parse ok");
+        assert!(!cli2.long);
     }
 }
