@@ -4,7 +4,7 @@
 >
 > The original `nuls` is an incredibly well-crafted, beautifully designed CLI tool that brings NuShell's elegant table-based `ls` output to any terminal. Huge thanks to **cesarferreira** for creating such an amazing developer tool that inspired this fork!
 
-This fork adds **tree view mode**, **interactive pagination**, **file owner display**, and **enhanced color control** while preserving everything that makes the original nuls great.
+This fork adds **tree view mode**, **interactive pagination**, **long listing with permissions and file owner**, and **enhanced color control** while preserving everything that makes the original nuls great.
 
 **Forked from:** [github.com/ozenalp22/nuls](https://github.com/ozenalp22/nuls)
 **This fork:** [github.com/HNKNTA/nuls](https://github.com/HNKNTA/nuls)
@@ -56,17 +56,17 @@ Limit results with `Enter` to continue, auto-exits when done (no `q` needed):
 -- 81 more, press Enter to continue --
 ```
 
-### File Owner Column (`-l`)
-Show the file owner in a dedicated column:
+### Long Listing (`-l`)
+Show file permissions and owner columns:
 
 ```
-┌───┬────────────┬────────┬──────┬───────┬───────────────┐
-│ # │ name       │ owner  │ type │  size │ modified      │
-├───┼────────────┼────────┼──────┼───────┼───────────────┤
-│ 0 │ src        │ user   │ dir  │ 160 B │ 2 minutes ago │
-│ 1 │ tests      │ user   │ dir  │  96 B │ 1 hour ago    │
-│ 2 │ Cargo.toml │ user   │ file │ 220 B │ 5 minutes ago │
-└───┴────────────┴────────┴──────┴───────┴───────────────┘
+┌───┬────────────┬──────┬─────────────┬───────┬───────┬───────────────┐
+│ # │ name       │ type │ permissions │ owner │  size │ modified      │
+├───┼────────────┼──────┼─────────────┼───────┼───────┼───────────────┤
+│ 0 │ src        │ dir  │ drwxr-xr-x  │ user  │ 160 B │ 2 minutes ago │
+│ 1 │ tests      │ dir  │ drwxr-xr-x  │ user  │  96 B │ 1 hour ago    │
+│ 2 │ Cargo.toml │ file │ -rw-r--r--  │ user  │ 220 B │ 5 minutes ago │
+└───┴────────────┴──────┴─────────────┴───────┴───────┴───────────────┘
 ```
 
 ### Color Control (`--color`)
@@ -84,7 +84,7 @@ Control ANSI color output for clean clipboard copying:
 | Tree view | `--tree` | Recursive directory listing with tree connectors |
 | Depth limit | `-d, --depth N` | Limit tree recursion depth |
 | Dirs only | `-D, --dirs-only` | Show only directories (hide files) |
-| Owner column | `-l, --long` | Show file owner username |
+| Long listing | `-l, --long` | Show permissions and file owner columns |
 | Pagination | `-n, --limit N` | Show N results, press Enter for more |
 | Color control | `--color=never` | Plain output for clipboard copying |
 
@@ -161,7 +161,7 @@ cargo install --path . --bin nuls --force
 | Flag | Description |
 |------|-------------|
 | `-a, --all` | Show dotfiles |
-| `-l, --long` | Show file owner column |
+| `-l, --long` | Show permissions and file owner columns |
 | `-t, --sort-modified` | Sort by modified time (newest first) |
 | `-r, --reverse` | Reverse sort order |
 | `-g, --git` | Show git status inline (+added/-deleted) |
