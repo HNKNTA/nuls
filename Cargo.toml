@@ -1,6 +1,6 @@
 [package]
 name = "nuls"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "NuShell-inspired ls with colorful table output, human-readable sizes, and recency-aware timestamps."
 license = "MIT"
@@ -10,3 +10,21 @@ clap = { version = "4.5", features = ["derive"] }
 atty = "0.2"
 unicode-width = "0.2"
 libc = "0.2"
+
+[profile.release]
+strip = true
+
+[package.metadata.deb]
+maintainer = "HNKNTA <noreply@github.com>"
+copyright = "2026, HNKNTA"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+nuls is a NuShell-inspired ls replacement that displays directory listings \
+in a colorful, box-drawn table format with human-readable sizes, relative \
+timestamps with recency-aware colors, and optional inline git status."""
+depends = "libc6"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/nuls", "usr/bin/", "755"],
+]
